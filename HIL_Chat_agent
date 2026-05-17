@@ -1,0 +1,62 @@
+
+import os
+import asyncio
+from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
+from autogen_agentchat.teams import RoundRobinGroupChat
+from autogen_agentchat.conditions import TextMentionTermination
+from autogen_ext.models.openai import OpenAIChatCompletionClient
+
+async def main():
+    # 1. Define your Model Client (Using Gemini OpenAI compatibility)
+    # Note: Wrap your API key safely in quotes
+    # 1. Define your Model Client (Using Gemini OpenAI compatibility)
+    model_client = OpenAIChatCompletionClient(
+        model="gemini-2.5-flash",  # <--- Changed from gemini-1.5-pro
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        api_key="I GAVE MY API KEY HERE"   
+    )
+
+    # 2. Define the Assistant Agent
+    assistant = AssistantAgent(
+        name="Assistant",
+        model_client=model_client,
+        system_message=(
+            "You are a helpful AI assistant. Provide concise answers. "
+            "When you are completely finished with the task, reply with 'TERMINATE'."
+        )
+    )
+
+    # 3. Define the User Proxy Agent (Human-in-the-Loop)
+    user_proxy = UserProxyAgent(
+        name="HumanAdmin",
+        input_func=input 
+    )
+
+    # 4. Define the Termination Condition
+    termination_condition = TextMentionTermination("TERMINATE")
+
+    # 5. Create the Team (Using RoundRobinGroupChat)
+    team = RoundRobinGroupChat(
+        participants=[user_proxy, assistant],
+        termination_condition=termination_condition
+    )
+
+# 6. Run the Chat Team
+    print("--- Starting Human-in-the-Loop Team Chat ---")
+    print("Type your message to guide the AI, or press Enter to let it proceed.\n")
+    
+    # Import TaskResult so we can check for it
+    from autogen_agentchat.base import TaskResult
+
+    async for message in team.run_stream(task="Help me draft a short email newsletter template."):
+        # Check if this is the final stream summary block
+        if isinstance(message, TaskResult):
+            print(f"\n[SYSTEM]: Chat finished. Reason: {message.stop_reason}")
+        # Otherwise, it's a regular agent message block
+        elif hasattr(message, "source") and message.source:
+            print(f"\n[{message.source.upper()}]: {message.content}")
+
+# This handles executing the top-level async function safely
+if __name__ == "__main__":
+    asyncio.run(main())
+
