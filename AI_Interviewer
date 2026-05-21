@@ -1,0 +1,236 @@
+"""
+Local AI Voice Interviewer & Evaluator Dashboard
+================================================
+An interactive, voice-driven mock interview application built with Streamlit, 
+AG2 (AutoGen), and Ollama. Runs 100% locally for zero latency, complete data privacy, 
+and zero API dependencies.
+
+Author: Your GitHub Handle
+License: MIT
+"""
+
+import base64
+import json
+import os
+import speech_recognition as sr
+import streamlit as st
+import autogen
+from gtts import gTTS
+
+# -----------------------------------------------------------------------------
+# 1. APPLICATION ORCHESTRATION & STATE MANAGEMENT
+# -----------------------------------------------------------------------------
+
+st.set_page_config(
+    page_title="Local Voice AI Interviewer",
+    page_icon="🎙️",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# Custom CSS for polished UI presentation
+st.markdown("""
+    <style>
+    .big-font { font-size:24px !important; font-weight: 600; }
+    .stMetric { background-color: #1e293b; padding: 15px; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.title("🎙️ Local Voice AI Interviewer")
+st.write("Simulate an immersive, contextual technical screen entirely on your local machine powered by Ollama.")
+st.markdown("---")
+
+# Core LLM configuration mapping directly to your local Ollama instance
+LLM_CONFIG = {
+    "config_list": [{
+        "model": "llama3",
+        "base_url": "http://localhost:11434/v1",
+        "api_key": "ollama",  # Required structural placeholder for OpenAI compatibility
+        "api_type": "openai"
+    }],
+    "temperature": 0.6
+}
+
+# Initialize session state vectors for conversational memory and flow mechanics
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {
+            "role": "assistant", 
+            "content": "Hello! Thank you for coming in today. Let's keep this casual—could you start by telling me a little bit about yourself and your background?"
+        }
+    ]
+if "interview_complete" not in st.session_state:
+    st.session_state.interview_complete = False
+if "turn_count" not in st.session_state:
+    st.session_state.turn_count = 0  
+if "last_spoken" not in st.session_state:
+    st.session_state.last_spoken = None
+
+# -----------------------------------------------------------------------------
+# 2. AUDIO SYNTHESIS ENGINE (BROWSER SPEECH SYNTHESIS)
+# -----------------------------------------------------------------------------
+
+def text_to_speech_autoplay(text: str):
+    """Generates audio from text via gTTS and injects an HTML5 autoplay element."""
+    try:
+        tts = gTTS(text=text, lang='en', tld='com')
+        temp_filename = "temp_voice.mp3"
+        tts.save(temp_filename)
+        
+        with open(temp_filename, "rb") as f:
+            audio_bytes = f.read()
+            
+        b64 = base64.b64encode(audio_bytes).decode()
+        audio_html = f'<audio autoplay><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>'
+        st.markdown(audio_html, unsafe_allow_html=True)
+        os.remove(temp_filename)
+    except Exception as e:
+        st.sidebar.error(f"TTS Audio Generation Exception: {e}")
+
+# -----------------------------------------------------------------------------
+# 3. INTERVIEW PHASE (REAL-TIME CONVERSATIONAL WORKFLOW)
+# -----------------------------------------------------------------------------
+
+if not st.session_state.interview_complete:
+    
+    # Render historical message stream with standard chat decorators
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Automatically stream newly appended interviewer questions out loud
+    latest_msg = st.session_state.messages[-1]
+    if latest_msg["role"] == "assistant" and st.session_state.last_spoken != latest_msg["content"]:
+        text_to_speech_autoplay(latest_msg["content"])
+        st.session_state.last_spoken = latest_msg["content"]
+
+    st.markdown("### 🎙️ Record Your Answer")
+    
+    # Utilize the standard, stable Streamlit input element
+    audio_file = st.audio_input("Record your voice answer")
+
+    if audio_file is not None:
+        with st.spinner("Processing voice input stream..."):
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(audio_file) as source:
+                audio_data = recognizer.record(source)
+                try:
+                    # Parse local speech via Google Web Speech backend
+                    user_text = recognizer.recognize_google(audio_data)
+                    
+                    st.session_state.messages.append({"role": "user", "content": user_text})
+                    st.session_state.turn_count += 1
+                    
+                    # Intercept flow once the threshold of 3 answers is completed
+                    if st.session_state.turn_count >= 3:
+                        closing_remarks = (
+                            "Thank you so much for your time today! We have everything we need. "
+                            "We will check through our notes and revert back to you shortly. Have a wonderful day!"
+                        )
+                        st.session_state.messages.append({"role": "assistant", "content": closing_remarks})
+                        text_to_speech_autoplay(closing_remarks)
+                        st.session_state.interview_complete = True
+                        st.rerun()
+                    
+                    # Contextual follow-up generation via local conversational agent
+                    else:
+                        interviewer = autogen.AssistantAgent(
+                            name="Interviewer",
+                            system_message=(
+                                "You are a friendly tech recruiter conducting a casual conversation. "
+                                "Acknowledge what the candidate just said in their last answer, and ask them a natural, related follow-up question. "
+                                "Keep your responses brief and highly conversational (under 3 sentences)."
+                            ),
+                            llm_config=LLM_CONFIG
+                        )
+                        
+                        ai_reply = interviewer.generate_reply(messages=st.session_state.messages)
+                        
+                        # Defensively extract response content string if structural payload shifts
+                        if isinstance(ai_reply, dict):
+                            ai_reply = ai_reply.get("content", "")
+                            
+                        st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+                        st.rerun()
+                        
+                except sr.UnknownValueError:
+                    st.error("Audio block registered, but text extraction failed. Please articulate clearly and verify microphone gain.")
+                except Exception as e:
+                    st.error(f"Transcription Failure: {e}")
+
+# -----------------------------------------------------------------------------
+# 4. EVALUATION PHASE (ANALYTICAL METRICS DASHBOARD)
+# -----------------------------------------------------------------------------
+
+else:
+    st.markdown("---")
+    st.header("📊 Final Performance Scorecard")
+    
+    with st.spinner("Compiling multi-agent metrics evaluation locally..."):
+        evaluator = autogen.AssistantAgent(
+            name="Evaluator",
+            system_message=(
+                "You are an expert interview consultant. Review the execution transcript. "
+                "Isolate technical syntax gaps, structure communication flaws, or shallow reasoning profiles. "
+                "You MUST output your evaluation in strict, valid JSON format. Do not use markdown backticks or wrappers. "
+                "Adhere precisely to this schema layout:\n"
+                "{\n"
+                '  "summary": "Detailed narrative feedback summarizing presentation and communication skill.",\n'
+                '  "flaws": ["Actionable critique item 1", "Actionable critique item 2"],\n'
+                '  "probability_score": "XX%"\n'
+                "}"
+            ),
+            llm_config=LLM_CONFIG
+        )
+        
+        # Build raw transcript presentation string omitting trailing closing remarks
+        transcript_string = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages[:-1]])
+        raw_eval = evaluator.generate_reply(messages=[{"role": "user", "content": transcript_string}])
+        
+        if isinstance(raw_eval, dict):
+            raw_eval = raw_eval.get("content", "")
+
+        try:
+            # Robust extraction mapping to strip arbitrary markdown blocks if appended
+            cleaned_json = raw_eval.strip()
+            if "```json" in cleaned_json:
+                cleaned_json = cleaned_json.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned_json:
+                cleaned_json = cleaned_json.split("```")[1].split("```")[0].strip()
+                
+            scorecard = json.loads(cleaned_json)
+            
+            # Metric Presentation Component
+            st.metric(
+                label="Estimated Probability of Passing Target Loop", 
+                value=scorecard.get("probability_score", "0%")
+            )
+            
+            st.subheader("💡 Performance Feedback Summary")
+            st.info(scorecard.get("summary", "Analysis data unavailable."))
+            
+            st.subheader("⚠️ Areas to Tweak & Structural Flaws")
+            flaws_list = scorecard.get("flaws", [])
+            if flaws_list:
+                for flaw in flaws_list:
+                    st.error(f"👉 {flaw}")
+            else:
+                st.success("Excellent presentation! No systemic technical or stylistic vulnerabilities discovered.")
+                
+        except Exception:
+            # Fail-safe unstructured display if local model outputs invalid JSON
+            st.warning("Displaying Raw Local Analysis Metrics:")
+            st.code(raw_eval, language="json")
+            
+    # Session Reset Vector Control
+    if st.button("🔄 Initialize New Interview Session", use_container_width=True):
+        st.session_state.messages = [
+            {
+                "role": "assistant", 
+                "content": "Hello! Thank you for coming in today. Let's keep this casual—could you start by telling me a little bit about yourself and your background?"
+            }
+        ]
+        st.session_state.interview_complete = False
+        st.session_state.turn_count = 0
+        st.session_state.last_spoken = None
+        st.rerun()
